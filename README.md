@@ -1,6 +1,14 @@
-# rex-beacon
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/rex-beacon-lockup-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/rex-beacon-lockup-light.svg">
+    <img alt="rex-beacon" src="assets/rex-beacon-lockup-light.svg" width="520">
+  </picture>
+</p>
 
-**OSC 7501 Program Status emitter, Rex event daemon, Feishu/Lark rich card notifier, and Mac/iOS Command Palette inbox for [Rex](https://www.superlogical.com/rex/docs).**
+<p align="center">
+  <strong>OSC 7501 Program Status emitter, Rex event daemon, Feishu/Lark rich card notifier, and Mac/iOS Command Palette inbox for <a href="https://www.superlogical.com/rex/docs">Rex</a>.</strong>
+</p>
 
 `rex-beacon` turns Rex terminal activity—coding agents (`antigravity`, `pi`, `claude`, `codex`), long-running builds, and listening dev servers—into:
 - **Structured OSC 7501 status indicators** (`working`, `blocked`, `done`, `error`) inside Rex tabs & sessions

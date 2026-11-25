@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title">
+  <title id="title">rex-beacon symbol (dark)</title>
+  <g id="symbol">
+    <path fill="#F8FAFC" d="M 28 64 L 48 44 L 132 128 L 48 212 L 28 192 L 92 128 Z"/>
+    <path fill="#FB923C" d="M 155.4 68.6 A 84 84 0 0 1 155.4 187.4 L 135.6 167.6 A 56 56 0 0 0 135.6 88.4 Z"/>
+    <path fill="#FBBF24" d="M 190.75 33.25 A 134 134 0 0 1 190.75 222.75 L 170.95 202.95 A 106 106 0 0 0 170.95 53.05 Z"/>
+  </g>
+</svg>
