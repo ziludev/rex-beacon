@@ -44,9 +44,17 @@ func TestBuildFeishuCardAndSummary(t *testing.T) {
 		Timestamp:    time.Date(2026, 11, 26, 0, 10, 0, 0, time.UTC),
 	}
 	card := BuildFeishuCard(n)
+	if card["schema"] != "2.0" {
+		t.Fatalf("expected schema 2.0, got %v", card["schema"])
+	}
 	header := card["header"].(map[string]any)
 	if header["template"] != "orange" {
 		t.Fatalf("expected orange template, got %v", header["template"])
+	}
+	bodyMap := card["body"].(map[string]any)
+	elems := bodyMap["elements"].([]any)
+	if len(elems) < 3 {
+		t.Fatalf("expected callout + metadata + collapsible_panel, got %d elements", len(elems))
 	}
 	raw, err := json.Marshal(card)
 	if err != nil {
@@ -58,6 +66,9 @@ func TestBuildFeishuCardAndSummary(t *testing.T) {
 	title, body := BuildPlainSummary(n)
 	if title == "" || body == "" {
 		t.Fatalf("expected non-empty plain summary: %q %q", title, body)
+	}
+	if got := CleanTerminalTail("──────────\n   \nline 1\nline 2\n", 5); got != "line 1\nline 2" {
+		t.Fatalf("unexpected CleanTerminalTail: %q", got)
 	}
 }
 
