@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ziludev/rex-beacon/internal/config"
+	"github.com/ziludev/rex-beacon/internal/control"
 	"github.com/ziludev/rex-beacon/internal/daemon"
 	"github.com/ziludev/rex-beacon/internal/hooks"
 	"github.com/ziludev/rex-beacon/internal/notify"
@@ -272,7 +273,8 @@ func cmdWatch(args []string) error {
 	if err != nil {
 		return err
 	}
-	notifier, err := buildNotifier(cfg)
+	refs := notify.NewRefStore(500)
+	notifier, feishuApp, err := buildNotifier(cfg, refs)
 	if err != nil {
 		return err
 	}
@@ -281,6 +283,24 @@ func cmdWatch(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	ctrl := control.NewController(client, refs)
+	if cfg.FeishuApp.Enabled && cfg.FeishuApp.Interactive && feishuApp != nil {
+		bot := control.NewFeishuBot(cfg.FeishuApp, ctrl, feishuApp, logger)
+		go func() {
+			if berr := bot.Run(ctx); berr != nil && !errors.Is(berr, context.Canceled) {
+				logger.Printf("feishu interactive stopped: %v", berr)
+			}
+		}()
+	}
+	if cfg.Telegram.Enabled && cfg.Telegram.Interactive {
+		tgBot := control.NewTelegramBot(cfg.Telegram, ctrl, logger)
+		go func() {
+			if berr := tgBot.Run(ctx); berr != nil && !errors.Is(berr, context.Canceled) {
+				logger.Printf("telegram interactive stopped: %v", berr)
+			}
+		}()
+	}
 
 	w := daemon.NewWatcher(client, cfg, notifier, logger)
 	err = w.Run(ctx)
@@ -360,7 +380,7 @@ func cmdNotify(args []string) error {
 	if *rexBin != "" {
 		cfg.RexBin = *rexBin
 	}
-	notifier, err := buildNotifier(cfg)
+	notifier, _, err := buildNotifier(cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -699,6 +719,8 @@ func cmdInit(args []string) error {
 	slackURL := fs.String("slack-url", "", "Slack incoming webhook URL")
 	telegramToken := fs.String("telegram-token", "", "Telegram Bot token")
 	telegramChat := fs.String("telegram-chat", "", "Telegram chat ID")
+	feishuInteractive := fs.Bool("feishu-interactive", true, "Enable Feishu WebSocket long-connection buttons and chat commands")
+	telegramInteractive := fs.Bool("telegram-interactive", true, "Enable Telegram Bot long-polling buttons and chat commands")
 	customWebhookURL := fs.String("custom-webhook-url", "", "Generic JSON webhook URL")
 	customWebhookSecret := fs.String("custom-webhook-secret", "", "Generic JSON webhook HMAC secret")
 	macos := fs.Bool("macos", true, "Enable macOS desktop notifications")
@@ -772,6 +794,12 @@ func cmdInit(args []string) error {
 			cfg.Telegram.Enabled = true
 		}
 	}
+	if visited["telegram-interactive"] {
+		cfg.Telegram.Interactive = *telegramInteractive
+	}
+	if visited["feishu-interactive"] {
+		cfg.FeishuApp.Interactive = *feishuInteractive
+	}
 	if *customWebhookURL != "" {
 		cfg.CustomWebhook.URL = *customWebhookURL
 		cfg.CustomWebhook.Secret = *customWebhookSecret
@@ -817,73 +845,77 @@ func cmdInit(args []string) error {
 	return nil
 }
 
-func buildNotifier(cfg config.Config) (*notify.MultiNotifier, error) {
+func buildNotifier(cfg config.Config, refs *notify.RefStore) (*notify.MultiNotifier, *notify.FeishuAppNotifier, error) {
 	var channels []notify.Notifier
+	var feishuApp *notify.FeishuAppNotifier
 	if cfg.FeishuApp.Enabled {
 		n, err := notify.NewFeishuAppNotifier(cfg.FeishuApp)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		n.Refs = refs
+		feishuApp = n
 		channels = append(channels, n)
 	}
 	if cfg.Webhook.Enabled {
 		n, err := notify.NewFeishuWebhookNotifier(cfg.Webhook)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		channels = append(channels, n)
 	}
 	if cfg.LarkCLI.Enabled {
 		n, err := notify.NewLarkCLINotifier(cfg.LarkCLI)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		channels = append(channels, n)
 	}
 	if cfg.DingTalk.Enabled {
 		n, err := notify.NewDingTalkNotifier(cfg.DingTalk)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		channels = append(channels, n)
 	}
 	if cfg.WeCom.Enabled {
 		n, err := notify.NewWeComNotifier(cfg.WeCom)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		channels = append(channels, n)
 	}
 	if cfg.Discord.Enabled {
 		n, err := notify.NewDiscordNotifier(cfg.Discord)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		channels = append(channels, n)
 	}
 	if cfg.Slack.Enabled {
 		n, err := notify.NewSlackNotifier(cfg.Slack)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		channels = append(channels, n)
 	}
 	if cfg.Telegram.Enabled {
 		n, err := notify.NewTelegramNotifier(cfg.Telegram)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		n.Refs = refs
 		channels = append(channels, n)
 	}
 	if cfg.CustomWebhook.Enabled {
 		n, err := notify.NewCustomWebhookNotifier(cfg.CustomWebhook)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		channels = append(channels, n)
 	}
 	if cfg.MacOS.Enabled {
 		channels = append(channels, notify.NewMacOSNotifier(cfg.MacOS))
 	}
-	return notify.NewMultiNotifier(channels...), nil
+	return notify.NewMultiNotifier(channels...), feishuApp, nil
 }

@@ -14,9 +14,20 @@ type cardTheme struct {
 	title    string
 }
 
+// FeishuCardOptions configures optional interactive elements on Feishu Card 2.0 cards.
+type FeishuCardOptions struct {
+	Interactive bool
+}
+
 // BuildFeishuCard constructs a clean Feishu/Lark Card 2.0 interactive card payload
 // that puts the full conclusion front-and-center while keeping metadata compact.
 func BuildFeishuCard(n Notification) map[string]any {
+	return BuildFeishuCardWithOptions(n, FeishuCardOptions{})
+}
+
+// BuildFeishuCardWithOptions constructs a Feishu/Lark Card 2.0 interactive card payload
+// with optional callback action buttons when two-way control is enabled.
+func BuildFeishuCardWithOptions(n Notification, opts FeishuCardOptions) map[string]any {
 	th := resolveTheme(n)
 
 	header := map[string]any{
@@ -110,7 +121,14 @@ func BuildFeishuCard(n Notification) map[string]any {
 		})
 	}
 
-	// 3. Compact metadata footer (3 balanced columns, grey-50 background)
+	// 3. Interactive quick-reply / peek buttons (when feishu_app long connection is enabled)
+	if opts.Interactive && n.BlockID != "" {
+		if btnRow := buildFeishuActionRow(n); btnRow != nil {
+			elements = append(elements, btnRow)
+		}
+	}
+
+	// 4. Compact metadata footer (3 balanced columns, grey-50 background)
 	cols := []any{}
 	if dir := shortenPath(n.Cwd, 28); dir != "" {
 		cols = append(cols, metaColumn("目录", "`"+dir+"`", 2))
@@ -135,12 +153,16 @@ func BuildFeishuCard(n Notification) map[string]any {
 		elements = append(elements, strip)
 	}
 
-	// 4. Subtle action hint only when blocked
+	// 5. Subtle action hint only when blocked
 	if n.State == "blocked" && n.BlockID != "" {
+		hint := "打开 Rex (Mac / iPhone) → Cmd+K → Beacon: Reply to Blocked Pane"
+		if opts.Interactive {
+			hint = "可直接点击上方按钮 / 引用回复此消息，或在 Rex 中按 Cmd+K → Beacon: Reply to Blocked Pane"
+		}
 		elements = append(elements, map[string]any{
 			"tag":       "markdown",
 			"text_size": "notation",
-			"content":   "<font color='grey'>打开 Rex (Mac / iPhone) → Cmd+K → Beacon: Reply to Blocked Pane</font>",
+			"content":   fmt.Sprintf("<font color='grey'>%s</font>", hint),
 		})
 	}
 
@@ -168,6 +190,77 @@ func makeTag(text, color string) map[string]any {
 			"tag":     "plain_text",
 			"content": text,
 		},
+	}
+}
+
+func buildFeishuActionRow(n Notification) map[string]any {
+	type btnSpec struct {
+		id     string
+		label  string
+		kind   string
+		action string
+		text   string
+		short  string
+	}
+	var specs []btnSpec
+	switch n.State {
+	case "blocked":
+		specs = []btnSpec{
+			{id: "btn_y", label: "允许 (y)", kind: "primary", action: "reply", text: "y\r", short: "y"},
+			{id: "btn_1", label: "选 1", kind: "default", action: "reply", text: "1\r", short: "1"},
+			{id: "btn_n", label: "拒绝 (n)", kind: "danger", action: "reply", text: "n\r", short: "n"},
+			{id: "btn_ctrlc", label: "Ctrl+C", kind: "default", action: "reply", text: "\x03", short: "Ctrl+C"},
+			{id: "btn_peek", label: "最新输出", kind: "default", action: "peek"},
+		}
+	case "done", "error":
+		specs = []btnSpec{
+			{id: "btn_peek", label: "查看最新输出", kind: "default", action: "peek"},
+		}
+	default:
+		return nil
+	}
+
+	cols := make([]any, 0, len(specs))
+	for _, s := range specs {
+		val := map[string]any{
+			"action":   s.action,
+			"block_id": n.BlockID,
+		}
+		if s.text != "" {
+			val["text"] = s.text
+		}
+		if s.short != "" {
+			val["label"] = s.short
+		}
+		cols = append(cols, map[string]any{
+			"tag":   "column",
+			"width": "auto",
+			"elements": []any{
+				map[string]any{
+					"tag":        "button",
+					"element_id": s.id,
+					"type":       s.kind,
+					"size":       "small",
+					"text": map[string]any{
+						"tag":     "plain_text",
+						"content": s.label,
+					},
+					"behaviors": []any{
+						map[string]any{
+							"type":  "callback",
+							"value": val,
+						},
+					},
+				},
+			},
+		})
+	}
+	return map[string]any{
+		"tag":                "column_set",
+		"flex_mode":          "none",
+		"horizontal_spacing": "8px",
+		"margin":             "0px 0px 8px 0px",
+		"columns":            cols,
 	}
 }
 

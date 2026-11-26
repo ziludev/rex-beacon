@@ -103,16 +103,19 @@ func TestBuildFeishuCardAndSummary(t *testing.T) {
 func TestFeishuAppNotifierMock(t *testing.T) {
 	var tokenCalls atomic.Int32
 	var sendCalls atomic.Int32
+	refs := NewRefStore(10)
 
 	n, err := NewFeishuAppNotifier(config.FeishuAppConfig{
-		Enabled:   true,
-		AppID:     "cli_test",
-		AppSecret: "sec_test",
-		ReceiveID: "ou_test",
+		Enabled:     true,
+		AppID:       "cli_test",
+		AppSecret:   "sec_test",
+		ReceiveID:   "ou_test",
+		Interactive: true,
 	})
 	if err != nil {
 		t.Fatalf("NewFeishuAppNotifier: %v", err)
 	}
+	n.Refs = refs
 	n.httpClient = &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			switch r.URL.Path {
@@ -132,7 +135,11 @@ func TestFeishuAppNotifierMock(t *testing.T) {
 					t.Fatalf("unexpected receive_id_type: %q", r.URL.Query().Get("receive_id_type"))
 				}
 				sendCalls.Add(1)
-				return jsonResponse(200, map[string]any{"code": 0, "msg": "success"}), nil
+				return jsonResponse(200, map[string]any{
+					"code": 0,
+					"msg":  "success",
+					"data": map[string]any{"message_id": "om_msg_123"},
+				}), nil
 			default:
 				return jsonResponse(404, map[string]any{"code": 404}), nil
 			}
@@ -140,7 +147,7 @@ func TestFeishuAppNotifierMock(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		if err := n.Send(context.Background(), Notification{State: "done", App: "go", Msg: "ok"}); err != nil {
+		if err := n.Send(context.Background(), Notification{State: "blocked", BlockID: "block:b1", App: "go", Msg: "ok"}); err != nil {
 			t.Fatalf("Send #%d: %v", i, err)
 		}
 	}
@@ -149,6 +156,16 @@ func TestFeishuAppNotifierMock(t *testing.T) {
 	}
 	if sendCalls.Load() != 2 {
 		t.Fatalf("expected 2 send calls, got %d", sendCalls.Load())
+	}
+	if ref, ok := refs.LookupMessage("om_msg_123"); !ok || ref.BlockID != "block:b1" {
+		t.Fatalf("expected message_id recorded in RefStore, got ok=%v ref=%+v", ok, ref)
+	}
+
+	// Verify interactive card builds Card 2.0 callback buttons
+	card := BuildFeishuCardWithOptions(Notification{State: "blocked", BlockID: "block:b1", App: "claude"}, FeishuCardOptions{Interactive: true})
+	rawCard, _ := json.Marshal(card)
+	if !stringsContainsAll(string(rawCard), `"behaviors"`, `"callback"`, `"允许 (y)"`, `"btn_peek"`) {
+		t.Fatalf("expected interactive callback buttons in card: %s", string(rawCard))
 	}
 }
 

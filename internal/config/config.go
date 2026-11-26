@@ -30,12 +30,14 @@ type Config struct {
 
 // FeishuAppConfig configures sending interactive cards via a Feishu/Lark custom app.
 type FeishuAppConfig struct {
-	Enabled       bool   `json:"enabled"`
-	Brand         string `json:"brand,omitempty"` // "feishu" (default) or "lark"
-	AppID         string `json:"app_id,omitempty"`
-	AppSecret     string `json:"app_secret,omitempty"`
-	ReceiveID     string `json:"receive_id,omitempty"`
-	ReceiveIDType string `json:"receive_id_type,omitempty"` // "open_id", "chat_id", "user_id", "email"
+	Enabled       bool     `json:"enabled"`
+	Brand         string   `json:"brand,omitempty"` // "feishu" (default) or "lark"
+	AppID         string   `json:"app_id,omitempty"`
+	AppSecret     string   `json:"app_secret,omitempty"`
+	ReceiveID     string   `json:"receive_id,omitempty"`
+	ReceiveIDType string   `json:"receive_id_type,omitempty"` // "open_id", "chat_id", "user_id", "email"
+	Interactive   bool     `json:"interactive"`               // enable WebSocket long-connection card buttons & chat control
+	AllowedUsers  []string `json:"allowed_users,omitempty"`   // optional open_id/user_id allowlist for remote control
 }
 
 // WebhookConfig configures sending cards via a Feishu/Lark custom bot webhook.
@@ -88,10 +90,12 @@ type SlackConfig struct {
 
 // TelegramConfig configures sending messages via a Telegram Bot.
 type TelegramConfig struct {
-	Enabled  bool   `json:"enabled"`
-	BotToken string `json:"bot_token,omitempty"`
-	ChatID   string `json:"chat_id,omitempty"`
-	BaseURL  string `json:"base_url,omitempty"`
+	Enabled      bool     `json:"enabled"`
+	BotToken     string   `json:"bot_token,omitempty"`
+	ChatID       string   `json:"chat_id,omitempty"`
+	BaseURL      string   `json:"base_url,omitempty"`
+	Interactive  bool     `json:"interactive"`             // enable getUpdates long polling for inline buttons & commands
+	AllowedUsers []string `json:"allowed_users,omitempty"` // optional numeric user ID allowlist
 }
 
 // CustomWebhookConfig configures a generic JSON webhook for custom integrations (Bark, ntfy, etc.).
@@ -125,10 +129,14 @@ func DefaultConfig() Config {
 		FeishuApp: FeishuAppConfig{
 			Brand:         "feishu",
 			ReceiveIDType: "open_id",
+			Interactive:   true,
 		},
 		LarkCLI: LarkCLIConfig{
 			Binary: "lark-cli",
 			As:     "bot",
+		},
+		Telegram: TelegramConfig{
+			Interactive: true,
 		},
 		MacOS: MacOSConfig{
 			Enabled: true,

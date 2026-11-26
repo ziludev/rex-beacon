@@ -30,16 +30,16 @@
    - Tracks `working → done/error` duration per `(block_id, record_id)`, deduplicates repeated bursts with cooldown, and enriches alerts with `session.view`, `process` (`cwd`, foreground command), and `format` terminal tail lines.
    - Optional triggers for newly opened TCP ports (`notify_on_ports`), terminal bells (`notify_on_bell`), and non-zero process exits (`notify_on_non_zero_exit`).
 
-3. **Multi-Platform Delivery Backends + macOS Native Alerts**
+3. **Multi-Platform Delivery Backends + Two-Way Chat Control**
    - **Feishu / Lark**:
-     - `feishu_app`: Direct Feishu / Lark OpenAPI (`tenant_access_token` + `im/v1/messages` rich Schema 2.0 interactive card with native `table` rendering).
+     - `feishu_app`: Direct Feishu / Lark OpenAPI (`tenant_access_token` + `im/v1/messages` Schema 2.0 card with native `table` rendering) **plus two-way WebSocket long-connection control** (no public domain required): click `允许 (y)` / `选 1` / `拒绝 (n)` / `Ctrl+C` / `最新输出` buttons on cards, quote-reply any notification card to send text directly into the terminal pane, or message `/inbox`, `/peek`, `/reply <id> <text>`.
      - `webhook`: Feishu / Lark custom group bot webhook with optional HMAC-SHA256 signing.
      - `lark_cli`: Delegates to a locally authenticated `lark-cli` binary.
+   - **Telegram (`telegram`)**: Bot API `sendMessage` with HTML formatting **plus `getUpdates` long-polling two-way control** (inline reply buttons, quoted replies, `/inbox`, `/peek`, `/reply`).
    - **DingTalk (`dingtalk`)**: Custom robot webhook (`markdown`, optional `SEC...` HMAC-SHA256 URL signing).
    - **WeCom / 企业微信 (`wecom`)**: Group bot webhook (`markdown` with semantic status colors).
    - **Discord (`discord`)**: Channel webhook with color-coded Rich Embeds & metadata fields.
    - **Slack (`slack`)**: Incoming webhook with colored Attachment + Block Kit sections.
-   - **Telegram (`telegram`)**: Bot API `sendMessage` with HTML formatting.
    - **Generic JSON Webhook (`custom_webhook`)**: Posts structured JSON + optional custom headers and `X-Rex-Beacon-Signature` HMAC-SHA256 header.
    - **macOS (`macos`)**: Native macOS notification center alerts with configurable sound.
 
@@ -134,7 +134,8 @@ eval "$(rex-beacon shell-init zsh)"
     "app_id": "cli_...",
     "app_secret": "...",
     "receive_id": "ou_...",
-    "receive_id_type": "open_id"
+    "receive_id_type": "open_id",
+    "interactive": true
   },
   "webhook": {
     "enabled": false,
@@ -169,7 +170,8 @@ eval "$(rex-beacon shell-init zsh)"
   "telegram": {
     "enabled": false,
     "bot_token": "",
-    "chat_id": ""
+    "chat_id": "",
+    "interactive": true
   },
   "custom_webhook": {
     "enabled": false,

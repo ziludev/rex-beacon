@@ -494,6 +494,7 @@ type TelegramNotifier struct {
 	cfg        config.TelegramConfig
 	baseURL    string
 	httpClient *http.Client
+	Refs       *RefStore
 }
 
 // NewTelegramNotifier validates cfg and creates a TelegramNotifier.
@@ -538,6 +539,11 @@ func (t *TelegramNotifier) Send(ctx context.Context, n Notification) error {
 		"disable_web_page_preview": true,
 		"text":                     truncateRunes(strings.TrimSpace(sb.String()), 4000),
 	}
+	if t.cfg.Interactive && n.BlockID != "" {
+		if kb := buildTelegramKeyboard(n); kb != nil {
+			payload["reply_markup"] = kb
+		}
+	}
 	_, rawResp, err := postJSON(ctx, t.httpClient, endpoint, nil, payload)
 	if err != nil {
 		return fmt.Errorf("telegram: %w", err)
@@ -545,11 +551,52 @@ func (t *TelegramNotifier) Send(ctx context.Context, n Notification) error {
 	var res struct {
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
 	}
-	if err := json.Unmarshal(rawResp, &res); err == nil && !res.OK {
-		return fmt.Errorf("telegram error: %s", res.Description)
+	if err := json.Unmarshal(rawResp, &res); err == nil {
+		if !res.OK {
+			return fmt.Errorf("telegram error: %s", res.Description)
+		}
+		if res.Result.MessageID > 0 {
+			t.Refs.Record("tg:"+strconv.FormatInt(res.Result.MessageID, 10), n)
+		}
 	}
 	return nil
+}
+
+func buildTelegramKeyboard(n Notification) map[string]any {
+	short := ShortID(n.BlockID)
+	if short == "" {
+		return nil
+	}
+	switch n.State {
+	case "blocked":
+		return map[string]any{
+			"inline_keyboard": []any{
+				[]any{
+					map[string]string{"text": "允许 (y)", "callback_data": "b:" + short + ":y"},
+					map[string]string{"text": "选 1", "callback_data": "b:" + short + ":1"},
+					map[string]string{"text": "拒绝 (n)", "callback_data": "b:" + short + ":n"},
+				},
+				[]any{
+					map[string]string{"text": "Ctrl+C", "callback_data": "b:" + short + ":ctrlc"},
+					map[string]string{"text": "查看最新输出", "callback_data": "b:" + short + ":peek"},
+				},
+			},
+		}
+	case "done", "error":
+		return map[string]any{
+			"inline_keyboard": []any{
+				[]any{
+					map[string]string{"text": "查看最新输出", "callback_data": "b:" + short + ":peek"},
+				},
+			},
+		}
+	default:
+		return nil
+	}
 }
 
 // --- 6. Generic / Custom JSON Webhook ---

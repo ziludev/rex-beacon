@@ -19,6 +19,7 @@ type FeishuAppNotifier struct {
 	cfg        config.FeishuAppConfig
 	httpClient *http.Client
 	baseURL    string
+	Refs       *RefStore
 
 	mu        sync.Mutex
 	token     string
@@ -106,16 +107,13 @@ func (f *FeishuAppNotifier) getToken(ctx context.Context) (string, error) {
 
 // Send sends an interactive card message to the configured Feishu/Lark recipient.
 func (f *FeishuAppNotifier) Send(ctx context.Context, n Notification) error {
-	token, err := f.getToken(ctx)
+	cardBytes, err := json.Marshal(BuildFeishuCardWithOptions(n, FeishuCardOptions{
+		Interactive: f.cfg.Interactive,
+	}))
 	if err != nil {
 		return err
 	}
-
-	cardBytes, err := json.Marshal(BuildFeishuCard(n))
-	if err != nil {
-		return err
-	}
-	bodyBytes, err := json.Marshal(map[string]string{
+	msgID, err := f.sendOpenAPIMessage(ctx, fmt.Sprintf("%s/open-apis/im/v1/messages?receive_id_type=%s", f.baseURL, f.cfg.ReceiveIDType), map[string]string{
 		"receive_id": f.cfg.ReceiveID,
 		"msg_type":   "interactive",
 		"content":    string(cardBytes),
@@ -123,31 +121,75 @@ func (f *FeishuAppNotifier) Send(ctx context.Context, n Notification) error {
 	if err != nil {
 		return err
 	}
+	f.Refs.Record(msgID, n)
+	return nil
+}
 
-	url := fmt.Sprintf("%s/open-apis/im/v1/messages?receive_id_type=%s", f.baseURL, f.cfg.ReceiveIDType)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
+// ReplyText sends a plain text reply to an existing Feishu message (or falls back to chatID / default recipient).
+func (f *FeishuAppNotifier) ReplyText(ctx context.Context, replyToMsgID, chatID, text string) error {
+	contentBytes, _ := json.Marshal(map[string]string{"text": text})
+	if strings.TrimSpace(replyToMsgID) != "" {
+		endpoint := fmt.Sprintf("%s/open-apis/im/v1/messages/%s/reply", f.baseURL, replyToMsgID)
+		_, err := f.sendOpenAPIMessage(ctx, endpoint, map[string]string{
+			"msg_type": "text",
+			"content":  string(contentBytes),
+		})
 		return err
+	}
+	if strings.TrimSpace(chatID) != "" {
+		endpoint := fmt.Sprintf("%s/open-apis/im/v1/messages?receive_id_type=chat_id", f.baseURL)
+		_, err := f.sendOpenAPIMessage(ctx, endpoint, map[string]string{
+			"receive_id": chatID,
+			"msg_type":   "text",
+			"content":    string(contentBytes),
+		})
+		return err
+	}
+	endpoint := fmt.Sprintf("%s/open-apis/im/v1/messages?receive_id_type=%s", f.baseURL, f.cfg.ReceiveIDType)
+	_, err := f.sendOpenAPIMessage(ctx, endpoint, map[string]string{
+		"receive_id": f.cfg.ReceiveID,
+		"msg_type":   "text",
+		"content":    string(contentBytes),
+	})
+	return err
+}
+
+func (f *FeishuAppNotifier) sendOpenAPIMessage(ctx context.Context, endpoint string, body map[string]string) (string, error) {
+	token, err := f.getToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 
 	resp, err := f.httpClient.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return "", err
 	}
 	var res struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
+		Data struct {
+			MessageID string `json:"message_id"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("http %d decode message response: %w", resp.StatusCode, err)
+		return "", fmt.Errorf("http %d decode message response: %w", resp.StatusCode, err)
 	}
 	if res.Code != 0 {
 		// Invalidate token if auth-related error so next call refreshes.
@@ -156,7 +198,7 @@ func (f *FeishuAppNotifier) Send(ctx context.Context, n Notification) error {
 			f.token = ""
 			f.mu.Unlock()
 		}
-		return fmt.Errorf("feishu send error (%d): %s", res.Code, res.Msg)
+		return "", fmt.Errorf("feishu send error (%d): %s", res.Code, res.Msg)
 	}
-	return nil
+	return res.Data.MessageID, nil
 }
