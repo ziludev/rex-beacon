@@ -86,25 +86,7 @@ func BuildFeishuCard(n Notification) map[string]any {
 
 	// 2. Full conclusion / terminal output directly visible in card body
 	if conclusion != "" {
-		elements = append(elements, map[string]any{
-			"tag":    "column_set",
-			"margin": "0px 0px 8px 0px",
-			"columns": []any{
-				map[string]any{
-					"tag":              "column",
-					"width":            "weighted",
-					"weight":           1,
-					"background_style": "default",
-					"padding":          "4px 2px",
-					"elements": []any{
-						map[string]any{
-							"tag":     "markdown",
-							"content": formatConclusionMarkdown(conclusion),
-						},
-					},
-				},
-			},
-		})
+		elements = append(elements, buildConclusionElements(conclusion)...)
 	} else if explicitMsg == "" {
 		// Fallback when neither msg nor terminal output is available
 		elements = append(elements, map[string]any{
@@ -348,6 +330,8 @@ func shortenPath(p string, maxLen int) string {
 	return "…" + p[len(p)-maxLen+1:]
 }
 
+const clippedConclusionPrefix = "> *…（前文已省略）*"
+
 // ExtractTerminalConclusion strips trailing TUI input boxes/status footers (such as
 // Antigravity, Pi, and Claude Code chrome) and retains the full recent conclusion
 // up to maxLines lines and maxChars bytes/runes cleanly.
@@ -360,6 +344,13 @@ func ExtractTerminalConclusion(raw string, maxLines, maxChars int) string {
 	}
 	if maxChars <= 0 {
 		maxChars = 3200
+	}
+
+	alreadyClipped := false
+	if strings.HasPrefix(raw, clippedConclusionPrefix) {
+		alreadyClipped = true
+		raw = strings.TrimPrefix(raw, clippedConclusionPrefix)
+		raw = strings.TrimLeft(raw, "\r\n")
 	}
 
 	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
@@ -445,8 +436,8 @@ func ExtractTerminalConclusion(raw string, maxLines, maxChars int) string {
 	}
 
 	out := strings.Join(selected, "\n")
-	if clipped {
-		out = "> *…（前文已省略）*\n\n" + out
+	if clipped || alreadyClipped {
+		out = clippedConclusionPrefix + "\n\n" + out
 	}
 	return out
 }
@@ -529,12 +520,12 @@ func findLatestTurnStart(lines []string) int {
 }
 
 func isHorizontalRule(s string) bool {
-	if len([]rune(s)) < 6 {
+	if len([]rune(s)) < 6 || strings.ContainsRune(s, ' ') {
 		return false
 	}
 	for _, r := range s {
 		switch r {
-		case '─', '━', '═', '-', '_', ' ':
+		case '─', '━', '═', '-', '_':
 		default:
 			return false
 		}
@@ -571,35 +562,48 @@ func isStartupArt(s string) bool {
 	return false
 }
 
-func formatConclusionMarkdown(s string) string {
-	lines := strings.Split(s, "\n")
-	out := make([]string, 0, len(lines))
-	inTable := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		isBoxTable := strings.HasPrefix(trimmed, "┌") ||
-			strings.HasPrefix(trimmed, "├") ||
-			strings.HasPrefix(trimmed, "└") ||
-			strings.HasPrefix(trimmed, "│")
-
-		if isBoxTable && !inTable {
-			out = append(out, "```")
-			inTable = true
-		} else if !isBoxTable && inTable {
-			out = append(out, "```")
-			inTable = false
-		}
-
-		if !inTable && strings.HasPrefix(trimmed, "• ") {
-			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-			line = indent + "- " + strings.TrimPrefix(trimmed, "• ")
-		}
-		out = append(out, line)
+func buildConclusionElements(s string) []any {
+	segments := parseConclusionSegments(s)
+	if len(segments) == 0 {
+		return nil
 	}
-	if inTable {
-		out = append(out, "```")
+
+	elements := make([]any, 0, len(segments))
+	tableCount := 0
+	for _, seg := range segments {
+		if seg.table != nil {
+			if tableCount < maxFeishuCardTables {
+				elements = append(elements, buildFeishuTableElement(seg.table, tableCount))
+				tableCount++
+				continue
+			}
+			// Feishu Card 2.0 allows at most 5 native table components per card.
+			seg.markdown = formatTableFallbackMarkdown(seg.table)
+		}
+		if strings.TrimSpace(seg.markdown) == "" {
+			continue
+		}
+		elements = append(elements, map[string]any{
+			"tag":    "column_set",
+			"margin": "0px 0px 8px 0px",
+			"columns": []any{
+				map[string]any{
+					"tag":              "column",
+					"width":            "weighted",
+					"weight":           1,
+					"background_style": "default",
+					"padding":          "4px 2px",
+					"elements": []any{
+						map[string]any{
+							"tag":     "markdown",
+							"content": seg.markdown,
+						},
+					},
+				},
+			},
+		})
 	}
-	return strings.Join(out, "\n")
+	return elements
 }
 
 func escapeMarkdownInline(s string) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -175,4 +176,188 @@ func TestFeishuWebhookNotifierMock(t *testing.T) {
 	if gotBody["msg_type"] != "interactive" || gotBody["sign"] == "" || gotBody["timestamp"] == "" {
 		t.Fatalf("unexpected webhook payload: %#v", gotBody)
 	}
+}
+
+func TestFeishuCardTableRendering(t *testing.T) {
+	t.Run("borderless clipped screenshot repro", func(t *testing.T) {
+		tail := "> *…（前文已省略）*\n\n" +
+			"                          │ \"notation\")              │ 改\n" +
+			"                          │                          │ 底\n" +
+			"                          │                          │ 数\n" +
+			"5.\n" +
+			"底部折叠面板终端最近   │ expanded:           │ (src/feishu.ts:274-\n" +
+			"输出（点击展开）       │ false，灰色圆角边框 │ 323) 已经是用同款"
+
+		card := BuildFeishuCard(Notification{
+			State: "done",
+			App:   "agy",
+			Msg:   "可以，而且几乎不需要大改架构。",
+			Tail:  tail,
+		})
+		elems := card["body"].(map[string]any)["elements"].([]any)
+
+		var tables []map[string]any
+		for _, el := range elems {
+			m := el.(map[string]any)
+			if m["tag"] == "table" {
+				tables = append(tables, m)
+			}
+		}
+		if len(tables) != 2 {
+			t.Fatalf("expected 2 native table elements, got %d (%#v)", len(tables), elems)
+		}
+
+		// Table 1: 13-line/3-line empty-col0 continuation merged into 1 row.
+		r1 := tables[0]["rows"].([]any)
+		if len(r1) != 1 {
+			t.Fatalf("expected table 1 to merge into 1 row, got %d: %#v", len(r1), r1)
+		}
+		row1 := r1[0].(map[string]any)
+		if row1["c1"] != "\"notation\")" || row1["c2"] != "改底数" {
+			t.Fatalf("unexpected table 1 row: %#v", row1)
+		}
+
+		// Table 2: wrapped CJK+ASCII row merged into 1 clean row.
+		r2 := tables[1]["rows"].([]any)
+		if len(r2) != 1 {
+			t.Fatalf("expected table 2 to merge into 1 row, got %d: %#v", len(r2), r2)
+		}
+		row2 := r2[0].(map[string]any)
+		if row2["c0"] != "底部折叠面板终端最近输出（点击展开）" {
+			t.Fatalf("unexpected col 0: %q", row2["c0"])
+		}
+		if row2["c1"] != "expanded: false，灰色圆角边框" {
+			t.Fatalf("unexpected col 1: %q", row2["c1"])
+		}
+		if row2["c2"] != "(src/feishu.ts:274-323) 已经是用同款" {
+			t.Fatalf("unexpected col 2: %q", row2["c2"])
+		}
+	})
+
+	t.Run("borderless table with header and unmerged short rows", func(t *testing.T) {
+		tail := "功能     │ 状态    │ 说明\n" +
+			"─────────┼─────────┼──────────────────\n" +
+			"卡片宽度 │ default │ 保持默认\n" +
+			"状态标签 │ 正常    │ 最多 2 个"
+
+		segs := parseConclusionSegments(tail)
+		if len(segs) != 1 || segs[0].table == nil {
+			t.Fatalf("expected 1 table segment, got %#v", segs)
+		}
+		tbl := segs[0].table
+		if len(tbl.headers) != 3 || tbl.headers[0] != "功能" || tbl.headers[1] != "状态" || tbl.headers[2] != "说明" {
+			t.Fatalf("unexpected headers: %#v", tbl.headers)
+		}
+		if len(tbl.rows) != 2 {
+			t.Fatalf("expected 2 separate rows (not merged), got %d: %#v", len(tbl.rows), tbl.rows)
+		}
+		if tbl.rows[0][0] != "卡片宽度" || tbl.rows[1][0] != "状态标签" {
+			t.Fatalf("unexpected rows: %#v", tbl.rows)
+		}
+	})
+
+	t.Run("box-drawing table with outer borders", func(t *testing.T) {
+		tail := "结论如下：\n" +
+			"┌──────────┬────────────┐\n" +
+			"│ 模块     │ 结果       │\n" +
+			"├──────────┼────────────┤\n" +
+			"│ notify   │ passed     │\n" +
+			"│          │ 100%       │\n" +
+			"├──────────┼────────────┤\n" +
+			"│ daemon   │ passed     │\n" +
+			"└──────────┴────────────┘\n" +
+			"• 全部通过"
+
+		segs := parseConclusionSegments(tail)
+		if len(segs) != 3 {
+			t.Fatalf("expected 3 segments (md + table + md), got %d: %#v", len(segs), segs)
+		}
+		if segs[0].markdown != "结论如下：" {
+			t.Fatalf("unexpected seg 0: %q", segs[0].markdown)
+		}
+		if segs[1].table == nil || len(segs[1].table.rows) != 2 {
+			t.Fatalf("unexpected seg 1 table: %#v", segs[1].table)
+		}
+		if segs[1].table.rows[0][1] != "passed 100%" {
+			t.Fatalf("expected wrapped cell merged, got %q", segs[1].table.rows[0][1])
+		}
+		if segs[2].markdown != "- 全部通过" {
+			t.Fatalf("unexpected seg 2: %q", segs[2].markdown)
+		}
+	})
+
+	t.Run("gfm markdown pipe table", func(t *testing.T) {
+		tail := "| File | Line | Status |\n| --- | :---: | ---: |\n| main.go | 42 | ok |\n| card.go | 100 | fixed |"
+		segs := parseConclusionSegments(tail)
+		if len(segs) != 1 || segs[0].table == nil {
+			t.Fatalf("expected 1 markdown table segment, got %#v", segs)
+		}
+		tbl := segs[0].table
+		if len(tbl.headers) != 3 || len(tbl.rows) != 2 || tbl.rows[1][2] != "fixed" {
+			t.Fatalf("unexpected markdown table: %#v", tbl)
+		}
+	})
+
+	t.Run("guards: single-col box, fenced code, shell pipes, and >5 tables", func(t *testing.T) {
+		// Single-column box stays markdown code fence, not native table.
+		singleBox := "┌──────────────┐\n│ hello world  │\n└──────────────┘"
+		segs := parseConclusionSegments(singleBox)
+		if len(segs) != 1 || segs[0].table != nil || !stringsContainsAll(segs[0].markdown, "```", "hello world") {
+			t.Fatalf("expected single-column box to stay fenced markdown, got %#v", segs)
+		}
+
+		// Fenced code containing pipe table syntax is left untouched.
+		fenced := "```markdown\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
+		segs = parseConclusionSegments(fenced)
+		if len(segs) != 1 || segs[0].table != nil {
+			t.Fatalf("expected fenced code not to parse as table, got %#v", segs)
+		}
+
+		// Two short coincidental shell/prose pipes must not become a table.
+		shell := "foo | bar\nbaz | qux"
+		segs = parseConclusionSegments(shell)
+		if len(segs) != 1 || segs[0].table != nil {
+			t.Fatalf("expected casual pipe lines not to parse as table, got %#v", segs)
+		}
+
+		// More than 5 tables caps native table components at 5.
+		var many string
+		for i := 0; i < 6; i++ {
+			many += "| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+		}
+		card := BuildFeishuCard(Notification{State: "done", Tail: many})
+		elems := card["body"].(map[string]any)["elements"].([]any)
+		tableCount := 0
+		for _, el := range elems {
+			if el.(map[string]any)["tag"] == "table" {
+				tableCount++
+			}
+		}
+		if tableCount != 5 {
+			t.Fatalf("expected native table count capped at 5, got %d", tableCount)
+		}
+	})
+
+	t.Run("double ExtractTerminalConclusion does not drop lines", func(t *testing.T) {
+		var lines []string
+		for i := 1; i <= 10; i++ {
+			lines = append(lines, "line")
+		}
+		lines[0] = "first"
+		lines[9] = "last"
+		first := ExtractTerminalConclusion(strings.Join(lines, "\n"), 5, 3200)
+		second := ExtractTerminalConclusion(first, 5, 3200)
+		if first != second {
+			t.Fatalf("double ExtractTerminalConclusion drifted:\nfirst:  %q\nsecond: %q", first, second)
+		}
+	})
+}
+
+func stringsContainsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !bytes.Contains([]byte(s), []byte(sub)) {
+			return false
+		}
+	}
+	return true
 }
