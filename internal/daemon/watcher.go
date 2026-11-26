@@ -410,7 +410,7 @@ func (w *Watcher) enrichNotification(ctx context.Context, sessionID, blockID str
 
 	if w.cfg.Rules.TailLines > 0 {
 		if raw, err := w.rex.BlockFormatText(enrichCtx, blockID); err == nil {
-			n.Tail = rexcli.TailLines(raw, w.cfg.Rules.TailLines)
+			n.Tail = notify.ExtractTerminalConclusion(raw, w.cfg.Rules.TailLines, 3200)
 		}
 	}
 	return n

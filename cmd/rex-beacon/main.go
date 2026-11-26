@@ -417,7 +417,7 @@ func cmdNotify(args []string) error {
 			}
 			if tl > 0 {
 				if raw, ferr := client.BlockFormatText(ctx, n.BlockID); ferr == nil {
-					n.Tail = rexcli.TailLines(raw, tl)
+					n.Tail = notify.ExtractTerminalConclusion(raw, tl, 3200)
 				}
 			}
 		}

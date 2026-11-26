@@ -169,13 +169,15 @@ func (c *Client) BlockPorts(ctx context.Context, blockID string) (*PortsResp, er
 }
 
 // BlockFormatText captures trimmed, unwrapped terminal screen+scrollback text.
+// For very large scrollbacks, it streams chunks sequentially and retains the tail safely.
 func (c *Client) BlockFormatText(ctx context.Context, blockID string) (string, error) {
+	const maxKeepBytes = 128 * 1024
 	var resp FormatResp
 	reqArgs, _ := json.Marshal(map[string]any{
 		"format":    "text",
 		"trim":      true,
 		"unwrap":    true,
-		"max_bytes": 65536,
+		"max_bytes": 262144,
 	})
 	if err := c.runJSON(ctx, []string{"block", "call", "-b", blockID, "format", string(reqArgs)}, &resp); err != nil {
 		return "", err
@@ -183,26 +185,30 @@ func (c *Client) BlockFormatText(ctx context.Context, blockID string) (string, e
 	if resp.ID == nil || resp.EOF {
 		return resp.Content, nil
 	}
-	// If truncated, read the tail end (up to ~64 KiB from end) using blob_read?
-	// Since format returns from the start and total is known, jump close to the tail when huge.
 	var sb strings.Builder
+	sb.WriteString(resp.Content)
 	offset := len(resp.Content)
-	if resp.Total > 65536 && resp.Total-65536 > offset {
-		offset = resp.Total - 65536
-	} else {
-		sb.WriteString(resp.Content)
-	}
 	for {
 		bArgs, _ := json.Marshal(map[string]any{
 			"id":        *resp.ID,
 			"offset":    offset,
-			"max_bytes": 65536,
+			"max_bytes": 262144,
 		})
 		var chunk BlobReadResp
 		if err := c.runJSON(ctx, []string{"block", "call", "-b", blockID, "blob_read", string(bArgs)}, &chunk); err != nil {
 			break
 		}
 		sb.WriteString(chunk.Data)
+		if sb.Len() > maxKeepBytes*2 {
+			cur := sb.String()
+			sb.Reset()
+			// Trim at a newline boundary so we never split a UTF-8 rune.
+			cut := cur[len(cur)-maxKeepBytes:]
+			if idx := strings.IndexByte(cut, '\n'); idx >= 0 {
+				cut = cut[idx+1:]
+			}
+			sb.WriteString(cut)
+		}
 		if chunk.EOF || len(chunk.Data) == 0 {
 			break
 		}

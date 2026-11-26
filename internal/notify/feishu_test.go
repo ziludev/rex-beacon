@@ -67,8 +67,35 @@ func TestBuildFeishuCardAndSummary(t *testing.T) {
 	if title == "" || body == "" {
 		t.Fatalf("expected non-empty plain summary: %q %q", title, body)
 	}
-	if got := CleanTerminalTail("──────────\n   \nline 1\nline 2\n", 5); got != "line 1\nline 2" {
-		t.Fatalf("unexpected CleanTerminalTail: %q", got)
+	if got := ExtractTerminalConclusion("──────────\n   \nline 1\nline 2\n", 5, 1000); got != "line 1\nline 2" {
+		t.Fatalf("unexpected ExtractTerminalConclusion: %q", got)
+	}
+
+	piRaw := ` - POST /api/model 逐会话改写：ok=160 fail=0
+ - 说明：已全部完成。
+ DeepSeek-V4.1-Flash · DeepSeek | think:high | dir pi-durable-agent | ⎇ main
+ ──────────────────────────────────────────
+ >
+ ──────────────────────────────────────────
+ ↳ 全切吧
+ 🔌 MCP: 3 servers enabled`
+	gotPi := ExtractTerminalConclusion(piRaw, 45, 3200)
+	wantPi := " - POST /api/model 逐会话改写：ok=160 fail=0\n - 说明：已全部完成。"
+	if gotPi != wantPi {
+		t.Fatalf("unexpected pi conclusion:\ngot:  %q\nwant: %q", gotPi, wantPi)
+	}
+
+	agyRaw := `  • 第一条结论
+  • 第二条结论
+──────────────────────────────────────────
+>
+──────────────────────────────────────────
+ ✦ Gemini 4 Hydrogen (High) │ ▰▰ 8%
+ ○ idle │ ⎇ main* │ ~/learn/pi-durable-agent │ » auto`
+	gotAgy := ExtractTerminalConclusion(agyRaw, 45, 3200)
+	wantAgy := "  • 第一条结论\n  • 第二条结论"
+	if gotAgy != wantAgy {
+		t.Fatalf("unexpected agy conclusion:\ngot:  %q\nwant: %q", gotAgy, wantAgy)
 	}
 }
 

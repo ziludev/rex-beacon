@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"unicode"
 )
 
 type cardTheme struct {
@@ -15,7 +14,8 @@ type cardTheme struct {
 	title    string
 }
 
-// BuildFeishuCard constructs a clean Feishu/Lark Card 2.0 interactive card payload.
+// BuildFeishuCard constructs a clean Feishu/Lark Card 2.0 interactive card payload
+// that puts the full conclusion front-and-center while keeping metadata compact.
 func BuildFeishuCard(n Notification) map[string]any {
 	th := resolveTheme(n)
 
@@ -53,33 +53,82 @@ func BuildFeishuCard(n Notification) map[string]any {
 	}
 
 	elements := []any{}
+	conclusion := ExtractTerminalConclusion(n.Tail, 45, 3200)
+	explicitMsg := escapeMarkdownInline(n.Msg)
 
-	// 1. Primary status callout (the single focal block)
-	primaryText := escapeMarkdownInline(n.Msg)
-	if primaryText == "" {
-		primaryText = th.title
-	}
-	elements = append(elements, map[string]any{
-		"tag":    "column_set",
-		"margin": "0px 0px 8px 0px",
-		"columns": []any{
-			map[string]any{
-				"tag":              "column",
-				"width":            "weighted",
-				"weight":           1,
-				"background_style": th.bgStyle,
-				"padding":          "10px 12px",
-				"elements": []any{
-					map[string]any{
-						"tag":     "markdown",
-						"content": fmt.Sprintf("**%s**", primaryText),
+	// 1. Explicit status message banner (when provided by OSC 7501 msg= or wrapper)
+	if explicitMsg != "" {
+		banner := map[string]any{
+			"tag": "column_set",
+			"columns": []any{
+				map[string]any{
+					"tag":              "column",
+					"width":            "weighted",
+					"weight":           1,
+					"background_style": th.bgStyle,
+					"padding":          "10px 12px",
+					"elements": []any{
+						map[string]any{
+							"tag":     "markdown",
+							"content": fmt.Sprintf("**%s**", explicitMsg),
+						},
 					},
 				},
 			},
-		},
-	})
+		}
+		if conclusion != "" {
+			banner["margin"] = "0px 0px 8px 0px"
+		} else {
+			banner["margin"] = "0px 0px 8px 0px"
+		}
+		elements = append(elements, banner)
+	}
 
-	// 2. Compact metadata strip (3 balanced columns, grey-50 background)
+	// 2. Full conclusion / terminal output directly visible in card body
+	if conclusion != "" {
+		elements = append(elements, map[string]any{
+			"tag":    "column_set",
+			"margin": "0px 0px 8px 0px",
+			"columns": []any{
+				map[string]any{
+					"tag":              "column",
+					"width":            "weighted",
+					"weight":           1,
+					"background_style": "default",
+					"padding":          "4px 2px",
+					"elements": []any{
+						map[string]any{
+							"tag":     "markdown",
+							"content": formatConclusionMarkdown(conclusion),
+						},
+					},
+				},
+			},
+		})
+	} else if explicitMsg == "" {
+		// Fallback when neither msg nor terminal output is available
+		elements = append(elements, map[string]any{
+			"tag":    "column_set",
+			"margin": "0px 0px 8px 0px",
+			"columns": []any{
+				map[string]any{
+					"tag":              "column",
+					"width":            "weighted",
+					"weight":           1,
+					"background_style": th.bgStyle,
+					"padding":          "10px 12px",
+					"elements": []any{
+						map[string]any{
+							"tag":     "markdown",
+							"content": fmt.Sprintf("**%s**", th.title),
+						},
+					},
+				},
+			},
+		})
+	}
+
+	// 3. Compact metadata footer (3 balanced columns, grey-50 background)
 	cols := []any{}
 	if dir := shortenPath(n.Cwd, 28); dir != "" {
 		cols = append(cols, metaColumn("目录", "`"+dir+"`", 2))
@@ -98,51 +147,10 @@ func BuildFeishuCard(n Notification) map[string]any {
 			"background_style":   "grey-50",
 			"columns":            cols,
 		}
-		if cleanedTail := CleanTerminalTail(n.Tail, 8); cleanedTail != "" || n.State == "blocked" {
+		if n.State == "blocked" && n.BlockID != "" {
 			strip["margin"] = "0px 0px 8px 0px"
 		}
 		elements = append(elements, strip)
-	}
-
-	// 3. Collapsed terminal tail (hidden by default so card stays clean at a glance)
-	if cleanedTail := CleanTerminalTail(n.Tail, 8); cleanedTail != "" {
-		fence := "```"
-		if strings.Contains(cleanedTail, "```") {
-			fence = "````"
-		}
-		panel := map[string]any{
-			"tag":              "collapsible_panel",
-			"expanded":         false,
-			"background_color": "grey-50",
-			"border": map[string]any{
-				"color":         "grey",
-				"corner_radius": "8px",
-			},
-			"padding": "8px 12px",
-			"header": map[string]any{
-				"title": map[string]any{
-					"tag":     "plain_text",
-					"content": "终端最近输出（点击展开）",
-				},
-				"icon": map[string]any{
-					"tag":   "standard_icon",
-					"token": "info_outlined",
-					"color": "grey",
-				},
-				"icon_position": "right",
-			},
-			"elements": []any{
-				map[string]any{
-					"tag":       "markdown",
-					"text_size": "notation",
-					"content":   fmt.Sprintf("%s\n%s\n%s", fence, cleanedTail, fence),
-				},
-			},
-		}
-		if n.State == "blocked" {
-			panel["margin"] = "0px 0px 8px 0px"
-		}
-		elements = append(elements, panel)
 	}
 
 	// 4. Subtle action hint only when blocked
@@ -340,42 +348,258 @@ func shortenPath(p string, maxLen int) string {
 	return "…" + p[len(p)-maxLen+1:]
 }
 
-// CleanTerminalTail strips noisy TUI box-drawing rules, blank lines, and keeps at most maxLines.
-func CleanTerminalTail(tail string, maxLines int) string {
-	if strings.TrimSpace(tail) == "" || maxLines <= 0 {
+// ExtractTerminalConclusion strips trailing TUI input boxes/status footers (such as
+// Antigravity, Pi, and Claude Code chrome) and retains the full recent conclusion
+// up to maxLines lines and maxChars bytes/runes cleanly.
+func ExtractTerminalConclusion(raw string, maxLines, maxChars int) string {
+	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
-	rawLines := strings.Split(strings.ReplaceAll(tail, "\r\n", "\n"), "\n")
-	cleaned := make([]string, 0, len(rawLines))
-	for _, line := range rawLines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || isDecorativeLine(trimmed) {
+	if maxLines <= 0 {
+		maxLines = 45
+	}
+	if maxChars <= 0 {
+		maxChars = 3200
+	}
+
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+
+	// Strip TUI bottom chrome: look for the bottommost input box framed by two horizontal rule lines.
+	lines = stripBottomTUIChrome(lines)
+
+	// Drop leading blank lines and decorative startup banner lines if captured.
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+
+	// Normalize internal lines: collapse consecutive blank lines and replace long box rules with "---".
+	norm := make([]string, 0, len(lines))
+	prevBlank := false
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if isStartupArt(trimmed) {
 			continue
 		}
-		runes := []rune(trimmed)
-		if len(runes) > 96 {
-			trimmed = string(runes[:93]) + "..."
+		if trimmed == "" {
+			if !prevBlank && len(norm) > 0 {
+				norm = append(norm, "")
+				prevBlank = true
+			}
+			continue
 		}
-		cleaned = append(cleaned, trimmed)
+		prevBlank = false
+		if isHorizontalRule(trimmed) {
+			norm = append(norm, "---")
+			continue
+		}
+		norm = append(norm, strings.TrimRight(l, " \t"))
 	}
-	if len(cleaned) == 0 {
+	for len(norm) > 0 && (norm[len(norm)-1] == "" || norm[len(norm)-1] == "---") {
+		norm = norm[:len(norm)-1]
+	}
+	if len(norm) == 0 {
 		return ""
 	}
-	if len(cleaned) > maxLines {
-		cleaned = cleaned[len(cleaned)-maxLines:]
-	}
-	return strings.Join(cleaned, "\n")
-}
 
-func isDecorativeLine(s string) bool {
-	hasContent := false
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			hasContent = true
+	// Stop at the most recent user prompt line if present above the answer so we don't bleed into older turns.
+	if start := findLatestTurnStart(norm); start > 0 && start < len(norm) {
+		norm = norm[start:]
+	}
+
+	// Apply maxLines from the bottom.
+	clipped := false
+	if len(norm) > maxLines {
+		norm = norm[len(norm)-maxLines:]
+		clipped = true
+	}
+
+	// Apply maxChars from the bottom while preserving whole lines.
+	var selected []string
+	totalRunes := 0
+	for i := len(norm) - 1; i >= 0; i-- {
+		rLen := len([]rune(norm[i])) + 1
+		if len(selected) > 0 && totalRunes+rLen > maxChars {
+			clipped = true
 			break
 		}
+		selected = append(selected, norm[i])
+		totalRunes += rLen
 	}
-	return !hasContent
+	for i, j := 0, len(selected)-1; i < j; i, j = i+1, j-1 {
+		selected[i], selected[j] = selected[j], selected[i]
+	}
+	for len(selected) > 0 && (strings.TrimSpace(selected[0]) == "" || selected[0] == "---") {
+		selected = selected[1:]
+	}
+	if len(selected) == 0 {
+		return ""
+	}
+
+	out := strings.Join(selected, "\n")
+	if clipped {
+		out = "> *…（前文已省略）*\n\n" + out
+	}
+	return out
+}
+
+func stripBottomTUIChrome(lines []string) []string {
+	n := len(lines)
+	searchFrom := n - 14
+	if searchFrom < 0 {
+		searchFrom = 0
+	}
+
+	// Find bottommost pair of horizontal rules framing an input prompt within the tail window.
+	bottomRule := -1
+	topRule := -1
+	for i := n - 1; i >= searchFrom; i-- {
+		if isHorizontalRule(strings.TrimSpace(lines[i])) {
+			if bottomRule == -1 {
+				bottomRule = i
+			} else if bottomRule-i <= 5 {
+				topRule = i
+				break
+			} else {
+				bottomRule = i
+			}
+		}
+	}
+
+	if topRule >= 0 && bottomRule > topRule {
+		// Verify between topRule and bottomRule looks like an input box (empty or prompt line).
+		looksLikeInput := true
+		for i := topRule + 1; i < bottomRule; i++ {
+			t := strings.TrimSpace(lines[i])
+			if t != "" && t != ">" && t != "❯" && !strings.HasPrefix(t, "> ") && !strings.HasPrefix(t, "❯ ") {
+				looksLikeInput = false
+				break
+			}
+		}
+		if looksLikeInput {
+			cut := topRule
+			// Pi renders a model/telemetry line immediately above the top rule.
+			if cut > 0 && isTelemetryBar(strings.TrimSpace(lines[cut-1])) {
+				cut--
+			}
+			lines = lines[:cut]
+		}
+	}
+
+	// Trim any remaining trailing bare shell prompts or status bars.
+	for len(lines) > 0 {
+		t := strings.TrimSpace(lines[len(lines)-1])
+		if t == "" || t == ">" || t == "❯" || t == "$" || t == "%" || isTelemetryBar(t) || strings.HasPrefix(t, "🔌 MCP:") {
+			lines = lines[:len(lines)-1]
+			continue
+		}
+		break
+	}
+	return lines
+}
+
+func findLatestTurnStart(lines []string) int {
+	// Look backward up to 100 lines for a clear TUI user prompt marker (e.g. "❯ ..." or "> ..." surrounded by blank/rule)
+	// without cutting inside short answers.
+	limit := len(lines) - 100
+	if limit < 0 {
+		limit = 0
+	}
+	for i := len(lines) - 1; i >= limit; i-- {
+		t := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(t, "❯ ") || strings.HasPrefix(t, "› ") {
+			return i + 1
+		}
+		if strings.HasPrefix(t, "> ") && i > 0 && (lines[i-1] == "---" || strings.TrimSpace(lines[i-1]) == "") {
+			// Skip markdown blockquotes if followed immediately by non-rule lines; TUI prompt usually precedes blank/rule or answer start.
+			if i+1 < len(lines) && (lines[i+1] == "---" || strings.TrimSpace(lines[i+1]) == "") {
+				return i + 1
+			}
+		}
+	}
+	return 0
+}
+
+func isHorizontalRule(s string) bool {
+	if len([]rune(s)) < 6 {
+		return false
+	}
+	for _, r := range s {
+		switch r {
+		case '─', '━', '═', '-', '_', ' ':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isTelemetryBar(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, " │ ") || strings.Contains(s, " | ") {
+		if strings.Contains(s, "think:") ||
+			strings.Contains(s, "idle") ||
+			strings.Contains(s, "tokens") ||
+			strings.Contains(s, "cache") ||
+			strings.Contains(s, "Gemini") ||
+			strings.Contains(s, "Claude") ||
+			strings.Contains(s, "DeepSeek") ||
+			strings.Contains(s, "1.0M") ||
+			strings.Contains(s, "auto") {
+			return true
+		}
+	}
+	return false
+}
+
+func isStartupArt(s string) bool {
+	for _, r := range s {
+		if r == '▄' || r == '▀' || r == '█' {
+			return true
+		}
+	}
+	return false
+}
+
+func formatConclusionMarkdown(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	inTable := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		isBoxTable := strings.HasPrefix(trimmed, "┌") ||
+			strings.HasPrefix(trimmed, "├") ||
+			strings.HasPrefix(trimmed, "└") ||
+			strings.HasPrefix(trimmed, "│")
+
+		if isBoxTable && !inTable {
+			out = append(out, "```")
+			inTable = true
+		} else if !isBoxTable && inTable {
+			out = append(out, "```")
+			inTable = false
+		}
+
+		if !inTable && strings.HasPrefix(trimmed, "• ") {
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			line = indent + "- " + strings.TrimPrefix(trimmed, "• ")
+		}
+		out = append(out, line)
+	}
+	if inTable {
+		out = append(out, "```")
+	}
+	return strings.Join(out, "\n")
 }
 
 func escapeMarkdownInline(s string) string {
@@ -390,6 +614,8 @@ func BuildPlainSummary(n Notification) (title string, body string) {
 	var parts []string
 	if n.Msg != "" {
 		parts = append(parts, n.Msg)
+	} else if c := ExtractTerminalConclusion(n.Tail, 3, 180); c != "" {
+		parts = append(parts, escapeMarkdownInline(c))
 	}
 	if loc := formatHeaderLocation(n); loc != "" {
 		parts = append(parts, loc)

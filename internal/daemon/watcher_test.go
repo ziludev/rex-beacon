@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -111,7 +112,7 @@ func TestWatcherTracksWorkingDurationAndDeduplicates(t *testing.T) {
 	if len(cap.sent) != 1 {
 		t.Fatalf("expected 1 deduplicated alert on blocked, got %d", len(cap.sent))
 	}
-	if cap.sent[0].SessionLabel != "my-project" || cap.sent[0].Cwd != "/tmp/proj" || cap.sent[0].Tail != "line B\nline C" {
+	if cap.sent[0].SessionLabel != "my-project" || cap.sent[0].Cwd != "/tmp/proj" || !strings.Contains(cap.sent[0].Tail, "line B\nline C") || strings.Contains(cap.sent[0].Tail, "line A") {
 		t.Fatalf("unexpected enriched notification: %+v", cap.sent[0])
 	}
 

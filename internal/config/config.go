@@ -88,7 +88,7 @@ func DefaultConfig() Config {
 			NotifyStates:          []string{"blocked", "error", "done"},
 			MinWorkingDurationSec: 0,
 			CooldownSec:           5,
-			TailLines:             8,
+			TailLines:             45,
 			NotifyOnNonZeroExit:   true,
 		},
 	}
@@ -164,7 +164,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Rules.CooldownSec = 5
 	}
 	if cfg.Rules.TailLines <= 0 {
-		cfg.Rules.TailLines = 8
+		cfg.Rules.TailLines = 45
 	}
 }
 
