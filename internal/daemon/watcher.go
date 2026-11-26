@@ -29,13 +29,16 @@ type Watcher struct {
 	log      *log.Logger
 	hostname string
 
-	mu           sync.Mutex
-	workingStart map[string]time.Time
-	lastNotified map[string]alertStamp
-	lastErrExit  map[string]time.Time
-	knownPorts   map[string]map[string]struct{}
-	sessionCache map[string]*rexcli.SessionViewResp
-	now          func() time.Time
+	mu            sync.Mutex
+	workingStart  map[string]time.Time
+	lastNotified  map[string]alertStamp
+	turnNotified  map[string]string
+	lastBlockDone map[string]time.Time
+	lastErrExit   map[string]time.Time
+	knownPorts    map[string]map[string]struct{}
+	sessionCache  map[string]*rexcli.SessionViewResp
+	now           func() time.Time
+	atComputer    func(context.Context) bool
 }
 
 // NewWatcher creates a Rex event watcher.
@@ -44,18 +47,24 @@ func NewWatcher(rex rexcli.API, cfg config.Config, notifier notify.Notifier, log
 		logger = log.New(os.Stderr, "[rex-beacon] ", log.LstdFlags)
 	}
 	host, _ := os.Hostname()
+	idleThreshold := time.Duration(cfg.Rules.UserIdleThresholdSec) * time.Second
 	return &Watcher{
-		rex:          rex,
-		cfg:          cfg,
-		notifier:     notifier,
-		log:          logger,
-		hostname:     host,
-		workingStart: make(map[string]time.Time),
-		lastNotified: make(map[string]alertStamp),
-		lastErrExit:  make(map[string]time.Time),
-		knownPorts:   make(map[string]map[string]struct{}),
-		sessionCache: make(map[string]*rexcli.SessionViewResp),
-		now:          time.Now,
+		rex:           rex,
+		cfg:           cfg,
+		notifier:      notifier,
+		log:           logger,
+		hostname:      host,
+		workingStart:  make(map[string]time.Time),
+		lastNotified:  make(map[string]alertStamp),
+		turnNotified:  make(map[string]string),
+		lastBlockDone: make(map[string]time.Time),
+		lastErrExit:   make(map[string]time.Time),
+		knownPorts:    make(map[string]map[string]struct{}),
+		sessionCache:  make(map[string]*rexcli.SessionViewResp),
+		now:           time.Now,
+		atComputer: func(ctx context.Context) bool {
+			return isUserAtComputer(ctx, idleThreshold)
+		},
 	}
 }
 
@@ -156,6 +165,18 @@ func (w *Watcher) cleanupBlock(sessionID, blockID string) {
 			delete(w.workingStart, k)
 		}
 	}
+	for k := range w.turnNotified {
+		if strings.HasPrefix(k, prefix) {
+			delete(w.turnNotified, k)
+		}
+	}
+	for k := range w.lastNotified {
+		if strings.HasPrefix(k, prefix) {
+			delete(w.lastNotified, k)
+		}
+	}
+	delete(w.lastBlockDone, blockID)
+	delete(w.lastErrExit, blockID)
 	delete(w.knownPorts, blockID)
 }
 
@@ -175,7 +196,9 @@ func (w *Watcher) handleTerminalEvent(ctx context.Context, sessionID string, bp 
 		}
 		w.mu.Lock()
 		for _, id := range p.IDs {
-			delete(w.workingStart, bp.BlockID+"|"+id)
+			k := bp.BlockID + "|" + id
+			delete(w.workingStart, k)
+			delete(w.turnNotified, k)
 		}
 		w.mu.Unlock()
 
@@ -207,15 +230,15 @@ func (w *Watcher) handleTerminalEvent(ctx context.Context, sessionID string, bp 
 		if err := json.Unmarshal(bp.Payload, &p); err != nil {
 			return
 		}
-		w.cleanupBlock(sessionID, bp.BlockID)
-		if !w.cfg.Rules.NotifyOnNonZeroExit || p.ExitCode == 0 {
-			return
+		cooldown := time.Duration(w.cfg.Rules.CooldownSec) * time.Second
+		if cooldown < 15*time.Second {
+			cooldown = 15 * time.Second
 		}
-		// Skip if a program_status error already fired for this block very recently.
 		w.mu.Lock()
-		recentErr := w.now().Sub(w.lastErrExit[bp.BlockID]) < 3*time.Second
+		recentErr := !w.lastErrExit[bp.BlockID].IsZero() && w.now().Sub(w.lastErrExit[bp.BlockID]) < cooldown
 		w.mu.Unlock()
-		if recentErr {
+		w.cleanupBlock(sessionID, bp.BlockID)
+		if !w.cfg.Rules.NotifyOnNonZeroExit || p.ExitCode == 0 || isInterruptExitCode(p.ExitCode) || recentErr {
 			return
 		}
 		msg := fmt.Sprintf("Process exited with code %d", p.ExitCode)
@@ -231,6 +254,11 @@ func (w *Watcher) handleTerminalEvent(ctx context.Context, sessionID string, bp 
 		})
 		w.dispatch(ctx, bp.BlockID+"|exit", msg, n)
 	}
+}
+
+func isInterruptExitCode(code int) bool {
+	// Ignore SIGHUP (129), SIGINT/Ctrl+C (130), SIGTERM (143).
+	return code == 129 || code == 130 || code == 143
 }
 
 func (w *Watcher) onProgramStatusChanged(ctx context.Context, sessionID, blockID string, p rexcli.ProgramStatusChangedPayload) {
@@ -253,19 +281,22 @@ func (w *Watcher) onProgramStatusChanged(ctx context.Context, sessionID, blockID
 		if _, ok := w.workingStart[key]; !ok {
 			w.workingStart[key] = now
 		}
+		delete(w.turnNotified, key)
+		w.clearBlockKindStampsLocked(blockID)
 	case "done", "error", "idle":
 		if started, ok := w.workingStart[key]; ok {
 			dur = now.Sub(started)
 			delete(w.workingStart, key)
 		}
+		if rec.State == "idle" {
+			delete(w.turnNotified, key)
+		}
 		if rec.State == "error" {
 			w.lastErrExit[blockID] = now
 		}
 	case "blocked":
-		if rec.State == "blocked" {
-			if _, ok := w.workingStart[key]; !ok {
-				w.workingStart[key] = now
-			}
+		if _, ok := w.workingStart[key]; !ok {
+			w.workingStart[key] = now
 		}
 	}
 	w.mu.Unlock()
@@ -274,7 +305,7 @@ func (w *Watcher) onProgramStatusChanged(ctx context.Context, sessionID, blockID
 		return
 	}
 
-	// Optional minimum working duration filter for "done" (blocked & error always alert).
+	// Minimum working duration filter for "done" (blocked & error always alert).
 	if rec.State == "done" && w.cfg.Rules.MinWorkingDurationSec > 0 && dur > 0 {
 		if dur < time.Duration(w.cfg.Rules.MinWorkingDurationSec)*time.Second {
 			return
@@ -285,7 +316,16 @@ func (w *Watcher) onProgramStatusChanged(ctx context.Context, sessionID, blockID
 		return
 	}
 
+	skipAtComputer, localOnly := w.applyAtComputerPolicy(ctx, sessionID, blockID)
+	if skipAtComputer {
+		return
+	}
+
 	sig := fmt.Sprintf("%s|%s|%s|%s", rec.State, rec.Kind, rec.Title, rec.Msg)
+	if !w.reserveStatusDispatch(blockID, key, rec.State, rec.Kind, sig, dur, now) {
+		return
+	}
+
 	n := notify.Notification{
 		EventKind: "program_status",
 		State:     rec.State,
@@ -297,12 +337,75 @@ func (w *Watcher) onProgramStatusChanged(ctx context.Context, sessionID, blockID
 		Progress:  rec.Progress,
 		Duration:  dur,
 		Timestamp: now,
+		LocalOnly: localOnly,
 	}
 	if rec.Owner != nil {
 		n.ProcessName = rec.Owner.Name
 	}
 	n = w.enrichNotification(ctx, sessionID, blockID, n)
-	w.dispatch(ctx, key, sig, n)
+	w.sendNotification(ctx, n)
+}
+
+func (w *Watcher) clearBlockKindStampsLocked(blockID string) {
+	prefix := blockID + "|kind|"
+	for k := range w.lastNotified {
+		if strings.HasPrefix(k, prefix) {
+			delete(w.lastNotified, k)
+		}
+	}
+}
+
+func (w *Watcher) reserveStatusDispatch(blockID, key, state, kind, sig string, dur time.Duration, now time.Time) bool {
+	cooldown := time.Duration(w.cfg.Rules.CooldownSec) * time.Second
+	repeatWindow := cooldown
+	if repeatWindow < 5*time.Minute {
+		repeatWindow = 5 * time.Minute
+	}
+	turnTag := state + "|" + kind
+	blockKindKey := blockID + "|kind|" + turnTag
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// 1. Suppress duplicate "done" in the same turn (without an intervening "working").
+	if state == "done" && w.turnNotified[key] == turnTag {
+		return false
+	}
+
+	// 2. Throttle rapid consecutive "done" alerts on the same pane within cooldown.
+	if state == "done" {
+		if lastDone, ok := w.lastBlockDone[blockID]; ok && now.Sub(lastDone) < cooldown {
+			if dur == 0 || dur < cooldown {
+				return false
+			}
+		}
+	}
+
+	// 3. Deduplicate same (blockID, state, kind) bursts within cooldown even if msg differs
+	// (e.g., Claude Code PermissionRequest + Notification hooks firing together).
+	if prev, ok := w.lastNotified[blockKindKey]; ok && now.Sub(prev.at) < cooldown {
+		return false
+	}
+
+	// 4. Deduplicate identical signatures within cooldown, or within repeatWindow while
+	// still in the same turn without an intervening "working" state.
+	if prev, ok := w.lastNotified[key]; ok && prev.signature == sig {
+		if now.Sub(prev.at) < cooldown {
+			return false
+		}
+		if w.turnNotified[key] == turnTag && now.Sub(prev.at) < repeatWindow {
+			return false
+		}
+	}
+
+	stamp := alertStamp{signature: sig, at: now}
+	w.lastNotified[key] = stamp
+	w.lastNotified[blockKindKey] = stamp
+	w.turnNotified[key] = turnTag
+	if state == "done" {
+		w.lastBlockDone[blockID] = now
+	}
+	return true
 }
 
 func (w *Watcher) onPortsChanged(ctx context.Context, sessionID, blockID string, p rexcli.PortsChangedPayload) {
@@ -350,6 +453,14 @@ func (w *Watcher) onPortsChanged(ctx context.Context, sessionID, blockID string,
 }
 
 func (w *Watcher) dispatch(ctx context.Context, key, sig string, n notify.Notification) {
+	skipAtComputer, localOnly := w.applyAtComputerPolicy(ctx, n.SessionID, n.BlockID)
+	if skipAtComputer {
+		return
+	}
+	if localOnly {
+		n.LocalOnly = true
+	}
+
 	cooldown := time.Duration(w.cfg.Rules.CooldownSec) * time.Second
 	now := w.now()
 
@@ -362,6 +473,31 @@ func (w *Watcher) dispatch(ctx context.Context, key, sig string, n notify.Notifi
 	w.lastNotified[key] = alertStamp{signature: sig, at: now}
 	w.mu.Unlock()
 
+	w.sendNotification(ctx, n)
+}
+
+func (w *Watcher) applyAtComputerPolicy(ctx context.Context, sessionID, blockID string) (skip bool, localOnly bool) {
+	mode := strings.ToLower(strings.TrimSpace(w.cfg.Rules.WhenAtComputer))
+	if mode == "" || mode == "notify" || mode == "off" {
+		return false, false
+	}
+	if w.atComputer == nil || !w.atComputer(ctx) {
+		return false, false
+	}
+	switch mode {
+	case "skip_all":
+		return true, false
+	case "skip_remote":
+		if w.isFocusedByConnectedClient(ctx, sessionID, blockID) {
+			return true, false
+		}
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func (w *Watcher) sendNotification(ctx context.Context, n notify.Notification) {
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err := w.notifier.Send(sendCtx, n); err != nil {

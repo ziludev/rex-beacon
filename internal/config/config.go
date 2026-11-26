@@ -11,15 +11,21 @@ import (
 
 // Config holds rex-beacon daemon, notifier, and rule configuration.
 type Config struct {
-	RexBin    string          `json:"rex_bin,omitempty"`
-	Server    string          `json:"server,omitempty"`
-	Session   string          `json:"session,omitempty"`
-	All       bool            `json:"all"`
-	FeishuApp FeishuAppConfig `json:"feishu_app"`
-	Webhook   WebhookConfig   `json:"webhook"`
-	LarkCLI   LarkCLIConfig   `json:"lark_cli"`
-	MacOS     MacOSConfig     `json:"macos"`
-	Rules     WatchRules      `json:"rules"`
+	RexBin        string              `json:"rex_bin,omitempty"`
+	Server        string              `json:"server,omitempty"`
+	Session       string              `json:"session,omitempty"`
+	All           bool                `json:"all"`
+	FeishuApp     FeishuAppConfig     `json:"feishu_app"`
+	Webhook       WebhookConfig       `json:"webhook"`
+	LarkCLI       LarkCLIConfig       `json:"lark_cli"`
+	DingTalk      DingTalkConfig      `json:"dingtalk"`
+	WeCom         WeComConfig         `json:"wecom"`
+	Discord       DiscordConfig       `json:"discord"`
+	Slack         SlackConfig         `json:"slack"`
+	Telegram      TelegramConfig      `json:"telegram"`
+	CustomWebhook CustomWebhookConfig `json:"custom_webhook"`
+	MacOS         MacOSConfig         `json:"macos"`
+	Rules         WatchRules          `json:"rules"`
 }
 
 // FeishuAppConfig configures sending interactive cards via a Feishu/Lark custom app.
@@ -54,6 +60,48 @@ type MacOSConfig struct {
 	Sound   string `json:"sound,omitempty"`
 }
 
+// DingTalkConfig configures a DingTalk custom robot webhook.
+type DingTalkConfig struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url,omitempty"`
+	Secret  string `json:"secret,omitempty"`
+}
+
+// WeComConfig configures a WeCom (企业微信) group bot webhook.
+type WeComConfig struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url,omitempty"`
+}
+
+// DiscordConfig configures a Discord incoming webhook.
+type DiscordConfig struct {
+	Enabled  bool   `json:"enabled"`
+	URL      string `json:"url,omitempty"`
+	Username string `json:"username,omitempty"`
+}
+
+// SlackConfig configures a Slack incoming webhook.
+type SlackConfig struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url,omitempty"`
+}
+
+// TelegramConfig configures sending messages via a Telegram Bot.
+type TelegramConfig struct {
+	Enabled  bool   `json:"enabled"`
+	BotToken string `json:"bot_token,omitempty"`
+	ChatID   string `json:"chat_id,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+}
+
+// CustomWebhookConfig configures a generic JSON webhook for custom integrations (Bark, ntfy, etc.).
+type CustomWebhookConfig struct {
+	Enabled bool              `json:"enabled"`
+	URL     string            `json:"url,omitempty"`
+	Secret  string            `json:"secret,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
 // WatchRules controls which Rex events trigger notifications and how they are enriched.
 type WatchRules struct {
 	NotifyStates           []string `json:"notify_states"`
@@ -66,6 +114,8 @@ type WatchRules struct {
 	IncludeApps            []string `json:"include_apps,omitempty"`
 	IgnoreApps             []string `json:"ignore_apps,omitempty"`
 	SkipIfClientFocusedNow bool     `json:"skip_if_client_focused_now"`
+	WhenAtComputer         string   `json:"when_at_computer,omitempty"`        // "skip_all" (default), "skip_remote", "notify"
+	UserIdleThresholdSec   int      `json:"user_idle_threshold_sec,omitempty"` // default 60
 }
 
 // DefaultConfig returns sensible defaults for rex-beacon.
@@ -86,10 +136,12 @@ func DefaultConfig() Config {
 		},
 		Rules: WatchRules{
 			NotifyStates:          []string{"blocked", "error", "done"},
-			MinWorkingDurationSec: 0,
-			CooldownSec:           5,
+			MinWorkingDurationSec: 15,
+			CooldownSec:           30,
 			TailLines:             45,
 			NotifyOnNonZeroExit:   true,
+			WhenAtComputer:        "skip_all",
+			UserIdleThresholdSec:  60,
 		},
 	}
 }
@@ -157,14 +209,23 @@ func applyDefaults(cfg *Config) {
 	if cfg.LarkCLI.As == "" {
 		cfg.LarkCLI.As = "bot"
 	}
+	if cfg.Telegram.BaseURL == "" {
+		cfg.Telegram.BaseURL = "https://api.telegram.org"
+	}
 	if len(cfg.Rules.NotifyStates) == 0 {
 		cfg.Rules.NotifyStates = []string{"blocked", "error", "done"}
 	}
 	if cfg.Rules.CooldownSec <= 0 {
-		cfg.Rules.CooldownSec = 5
+		cfg.Rules.CooldownSec = 30
 	}
 	if cfg.Rules.TailLines <= 0 {
 		cfg.Rules.TailLines = 45
+	}
+	if cfg.Rules.WhenAtComputer == "" {
+		cfg.Rules.WhenAtComputer = "skip_all"
+	}
+	if cfg.Rules.UserIdleThresholdSec <= 0 {
+		cfg.Rules.UserIdleThresholdSec = 60
 	}
 }
 
@@ -201,6 +262,43 @@ func applyEnv(cfg *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("FEISHU_WEBHOOK_SECRET")); v != "" {
 		cfg.Webhook.Secret = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DINGTALK_WEBHOOK_URL")); v != "" {
+		cfg.DingTalk.URL = v
+		cfg.DingTalk.Enabled = true
+	}
+	if v := strings.TrimSpace(os.Getenv("DINGTALK_WEBHOOK_SECRET")); v != "" {
+		cfg.DingTalk.Secret = v
+	}
+	if v := strings.TrimSpace(os.Getenv("WECOM_WEBHOOK_URL")); v != "" {
+		cfg.WeCom.URL = v
+		cfg.WeCom.Enabled = true
+	}
+	if v := strings.TrimSpace(os.Getenv("DISCORD_WEBHOOK_URL")); v != "" {
+		cfg.Discord.URL = v
+		cfg.Discord.Enabled = true
+	}
+	if v := strings.TrimSpace(os.Getenv("SLACK_WEBHOOK_URL")); v != "" {
+		cfg.Slack.URL = v
+		cfg.Slack.Enabled = true
+	}
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")); v != "" {
+		cfg.Telegram.BotToken = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_CHAT_ID")); v != "" {
+		cfg.Telegram.ChatID = v
+	}
+	if cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "" {
+		if envBool("TELEGRAM_ENABLED", true) {
+			cfg.Telegram.Enabled = true
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("REX_BEACON_WEBHOOK_URL")); v != "" {
+		cfg.CustomWebhook.URL = v
+		cfg.CustomWebhook.Enabled = true
+	}
+	if v := strings.TrimSpace(os.Getenv("REX_BEACON_WEBHOOK_SECRET")); v != "" {
+		cfg.CustomWebhook.Secret = v
 	}
 	if v := os.Getenv("REX_BEACON_MACOS_ENABLED"); v != "" {
 		cfg.MacOS.Enabled = envBool("REX_BEACON_MACOS_ENABLED", cfg.MacOS.Enabled)

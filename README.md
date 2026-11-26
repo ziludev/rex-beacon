@@ -30,11 +30,18 @@
    - Tracks `working → done/error` duration per `(block_id, record_id)`, deduplicates repeated bursts with cooldown, and enriches alerts with `session.view`, `process` (`cwd`, foreground command), and `format` terminal tail lines.
    - Optional triggers for newly opened TCP ports (`notify_on_ports`), terminal bells (`notify_on_bell`), and non-zero process exits (`notify_on_non_zero_exit`).
 
-3. **Three Feishu / Lark Delivery Backends + macOS Native Alerts**
-   - **`feishu_app`**: Direct Feishu / Lark OpenAPI (`tenant_access_token` + `im/v1/messages` rich interactive card) via `app_id`, `app_secret`, `receive_id`.
-   - **`webhook`**: Feishu / Lark custom group bot webhook with optional HMAC-SHA256 signing.
-   - **`lark_cli`**: Delegates to a locally authenticated `lark-cli` binary.
-   - **`macos`**: Native macOS notification center alerts with configurable sound.
+3. **Multi-Platform Delivery Backends + macOS Native Alerts**
+   - **Feishu / Lark**:
+     - `feishu_app`: Direct Feishu / Lark OpenAPI (`tenant_access_token` + `im/v1/messages` rich Schema 2.0 interactive card with native `table` rendering).
+     - `webhook`: Feishu / Lark custom group bot webhook with optional HMAC-SHA256 signing.
+     - `lark_cli`: Delegates to a locally authenticated `lark-cli` binary.
+   - **DingTalk (`dingtalk`)**: Custom robot webhook (`markdown`, optional `SEC...` HMAC-SHA256 URL signing).
+   - **WeCom / 企业微信 (`wecom`)**: Group bot webhook (`markdown` with semantic status colors).
+   - **Discord (`discord`)**: Channel webhook with color-coded Rich Embeds & metadata fields.
+   - **Slack (`slack`)**: Incoming webhook with colored Attachment + Block Kit sections.
+   - **Telegram (`telegram`)**: Bot API `sendMessage` with HTML formatting.
+   - **Generic JSON Webhook (`custom_webhook`)**: Posts structured JSON + optional custom headers and `X-Rex-Beacon-Signature` HMAC-SHA256 header.
+   - **macOS (`macos`)**: Native macOS notification center alerts with configurable sound.
 
 4. **Rex Mac & iOS Lua Plugin (`rex-beacon rex install`)**
    Installs `~/.config/rex/plugins/rex-beacon/init.lua` and wires it into `~/.config/rex/init.lua` without disturbing existing plugins (such as `leaf`):
@@ -141,21 +148,52 @@ eval "$(rex-beacon shell-init zsh)"
     "chat_id": "",
     "user_id": ""
   },
+  "dingtalk": {
+    "enabled": false,
+    "url": "",
+    "secret": ""
+  },
+  "wecom": {
+    "enabled": false,
+    "url": ""
+  },
+  "discord": {
+    "enabled": false,
+    "url": "",
+    "username": "rex-beacon"
+  },
+  "slack": {
+    "enabled": false,
+    "url": ""
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": ""
+  },
+  "custom_webhook": {
+    "enabled": false,
+    "url": "",
+    "secret": "",
+    "headers": {}
+  },
   "macos": {
     "enabled": true,
     "sound": "Glass"
   },
   "rules": {
     "notify_states": ["blocked", "error", "done"],
-    "min_working_duration_sec": 0,
-    "cooldown_sec": 5,
-    "tail_lines": 15,
+    "min_working_duration_sec": 15,
+    "cooldown_sec": 30,
+    "tail_lines": 45,
     "notify_on_ports": false,
     "notify_on_bell": false,
     "notify_on_non_zero_exit": true,
-    "skip_if_client_focused_now": false
+    "skip_if_client_focused_now": false,
+    "when_at_computer": "skip_all",
+    "user_idle_threshold_sec": 60
   }
 }
 ```
 
-Environment overrides: `REX_BEACON_CONFIG`, `REX_BEACON_REX_BIN`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_RECEIVE_ID`, `FEISHU_RECEIVE_ID_TYPE`, `FEISHU_BRAND`, `FEISHU_WEBHOOK_URL`, `FEISHU_WEBHOOK_SECRET`, `REX_BEACON_MACOS_ENABLED`.
+Environment overrides: `REX_BEACON_CONFIG`, `REX_BEACON_REX_BIN`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_RECEIVE_ID`, `FEISHU_RECEIVE_ID_TYPE`, `FEISHU_BRAND`, `FEISHU_WEBHOOK_URL`, `FEISHU_WEBHOOK_SECRET`, `DINGTALK_WEBHOOK_URL`, `DINGTALK_WEBHOOK_SECRET`, `WECOM_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `REX_BEACON_WEBHOOK_URL`, `REX_BEACON_WEBHOOK_SECRET`, `REX_BEACON_MACOS_ENABLED`.

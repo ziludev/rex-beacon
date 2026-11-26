@@ -692,11 +692,29 @@ func cmdInit(args []string) error {
 	webhookSecret := fs.String("webhook-secret", "", "Webhook HMAC secret")
 	larkChatID := fs.String("lark-cli-chat", "", "Use local lark-cli to send to chat_id")
 	larkUserID := fs.String("lark-cli-user", "", "Use local lark-cli to send to user_id")
+	dingtalkURL := fs.String("dingtalk-url", "", "DingTalk custom robot webhook URL")
+	dingtalkSecret := fs.String("dingtalk-secret", "", "DingTalk webhook HMAC secret (SEC...)")
+	wecomURL := fs.String("wecom-url", "", "WeCom (企业微信) group bot webhook URL")
+	discordURL := fs.String("discord-url", "", "Discord webhook URL")
+	slackURL := fs.String("slack-url", "", "Slack incoming webhook URL")
+	telegramToken := fs.String("telegram-token", "", "Telegram Bot token")
+	telegramChat := fs.String("telegram-chat", "", "Telegram chat ID")
+	customWebhookURL := fs.String("custom-webhook-url", "", "Generic JSON webhook URL")
+	customWebhookSecret := fs.String("custom-webhook-secret", "", "Generic JSON webhook HMAC secret")
 	macos := fs.Bool("macos", true, "Enable macOS desktop notifications")
 	sound := fs.String("sound", "Glass", "macOS notification sound")
+	minDuration := fs.Int("min-duration", -1, "Minimum working duration in seconds before notifying on done (0 = always)")
+	cooldown := fs.Int("cooldown", -1, "Cooldown seconds between repeated alerts per pane")
+	skipFocused := fs.Bool("skip-focused", false, "Skip notifications when the target pane is focused in a connected Rex client")
+	whenAtComputer := fs.String("when-at-computer", "skip_all", "Behavior when active at this Mac: skip_all|skip_remote|notify")
+	idleThreshold := fs.Int("idle-threshold", 60, "Seconds of keyboard/mouse inactivity before considering user away")
+	notifyStates := fs.String("notify-states", "", "Comma-separated states to notify on (e.g. blocked,error,done)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
 
 	cfg, path, err := config.Load(*cfgPath)
 	if err != nil {
@@ -726,8 +744,71 @@ func cmdInit(args []string) error {
 		cfg.LarkCLI.UserID = *larkUserID
 		cfg.LarkCLI.Enabled = true
 	}
-	cfg.MacOS.Enabled = *macos
-	cfg.MacOS.Sound = *sound
+	if *dingtalkURL != "" {
+		cfg.DingTalk.URL = *dingtalkURL
+		cfg.DingTalk.Secret = *dingtalkSecret
+		cfg.DingTalk.Enabled = true
+	}
+	if *wecomURL != "" {
+		cfg.WeCom.URL = *wecomURL
+		cfg.WeCom.Enabled = true
+	}
+	if *discordURL != "" {
+		cfg.Discord.URL = *discordURL
+		cfg.Discord.Enabled = true
+	}
+	if *slackURL != "" {
+		cfg.Slack.URL = *slackURL
+		cfg.Slack.Enabled = true
+	}
+	if *telegramToken != "" {
+		cfg.Telegram.BotToken = *telegramToken
+	}
+	if *telegramChat != "" {
+		cfg.Telegram.ChatID = *telegramChat
+	}
+	if *telegramToken != "" || *telegramChat != "" {
+		if cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "" {
+			cfg.Telegram.Enabled = true
+		}
+	}
+	if *customWebhookURL != "" {
+		cfg.CustomWebhook.URL = *customWebhookURL
+		cfg.CustomWebhook.Secret = *customWebhookSecret
+		cfg.CustomWebhook.Enabled = true
+	}
+	if visited["macos"] {
+		cfg.MacOS.Enabled = *macos
+	}
+	if visited["sound"] {
+		cfg.MacOS.Sound = *sound
+	}
+	if visited["min-duration"] && *minDuration >= 0 {
+		cfg.Rules.MinWorkingDurationSec = *minDuration
+	}
+	if visited["cooldown"] && *cooldown > 0 {
+		cfg.Rules.CooldownSec = *cooldown
+	}
+	if visited["skip-focused"] {
+		cfg.Rules.SkipIfClientFocusedNow = *skipFocused
+	}
+	if visited["when-at-computer"] && strings.TrimSpace(*whenAtComputer) != "" {
+		cfg.Rules.WhenAtComputer = strings.TrimSpace(*whenAtComputer)
+	}
+	if visited["idle-threshold"] && *idleThreshold > 0 {
+		cfg.Rules.UserIdleThresholdSec = *idleThreshold
+	}
+	if visited["notify-states"] && strings.TrimSpace(*notifyStates) != "" {
+		var states []string
+		for _, s := range strings.Split(*notifyStates, ",") {
+			if t := strings.TrimSpace(s); t != "" {
+				states = append(states, t)
+			}
+		}
+		if len(states) > 0 {
+			cfg.Rules.NotifyStates = states
+		}
+	}
 
 	if err := config.Save(path, cfg); err != nil {
 		return err
@@ -754,6 +835,48 @@ func buildNotifier(cfg config.Config) (*notify.MultiNotifier, error) {
 	}
 	if cfg.LarkCLI.Enabled {
 		n, err := notify.NewLarkCLINotifier(cfg.LarkCLI)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, n)
+	}
+	if cfg.DingTalk.Enabled {
+		n, err := notify.NewDingTalkNotifier(cfg.DingTalk)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, n)
+	}
+	if cfg.WeCom.Enabled {
+		n, err := notify.NewWeComNotifier(cfg.WeCom)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, n)
+	}
+	if cfg.Discord.Enabled {
+		n, err := notify.NewDiscordNotifier(cfg.Discord)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, n)
+	}
+	if cfg.Slack.Enabled {
+		n, err := notify.NewSlackNotifier(cfg.Slack)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, n)
+	}
+	if cfg.Telegram.Enabled {
+		n, err := notify.NewTelegramNotifier(cfg.Telegram)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, n)
+	}
+	if cfg.CustomWebhook.Enabled {
+		n, err := notify.NewCustomWebhookNotifier(cfg.CustomWebhook)
 		if err != nil {
 			return nil, err
 		}

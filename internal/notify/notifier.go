@@ -29,6 +29,7 @@ type Notification struct {
 	Duration     time.Duration
 	Tail         string
 	Timestamp    time.Time
+	LocalOnly    bool
 }
 
 // Notifier delivers a Notification to a target channel.
@@ -77,22 +78,29 @@ func (m *MultiNotifier) Name() string {
 
 // Send delivers n to every configured channel, continuing even if one fails.
 func (m *MultiNotifier) Send(ctx context.Context, n Notification) error {
-	if len(m.notifiers) == 0 {
+	var targets []Notifier
+	for _, target := range m.notifiers {
+		if n.LocalOnly && target.Name() != "macos" {
+			continue
+		}
+		targets = append(targets, target)
+	}
+	if len(targets) == 0 {
 		return nil
 	}
 	type result struct {
 		name string
 		err  error
 	}
-	ch := make(chan result, len(m.notifiers))
-	for _, target := range m.notifiers {
+	ch := make(chan result, len(targets))
+	for _, target := range targets {
 		target := target
 		go func() {
 			ch <- result{name: target.Name(), err: target.Send(ctx, n)}
 		}()
 	}
 	var errs []string
-	for i := 0; i < len(m.notifiers); i++ {
+	for i := 0; i < len(targets); i++ {
 		r := <-ch
 		if r.err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", r.name, r.err))
